@@ -745,7 +745,7 @@ def apply_simulasi_fiskal_to_pdb_nominal(pdb_df: pd.DataFrame, simulasi_df: pd.D
     if simulasi_df is None or simulasi_df.empty or "indikator" not in work.columns:
         return work
 
-    divisors = {"out_tw1": 180.0, "out_tw2": 184.0, "out_tw3": 185.0, "out_tw4": 191.0}
+    divisors = {"out_tw1": 1.80, "out_tw2": 1.84, "out_tw3": 1.85, "out_tw4": 1.91}
     sim = simulasi_df.copy()
     sim["indikator"] = sim["indikator"].astype(str).str.strip()
     sim_row = sim.loc[sim["indikator"] == "Bantuan Pangan"]

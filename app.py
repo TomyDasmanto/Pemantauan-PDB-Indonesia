@@ -746,7 +746,7 @@ def apply_simulasi_fiskal_to_pdb_nominal(pdb_df: pd.DataFrame, simulasi_df: pd.D
     if simulasi_df is None or simulasi_df.empty or "indikator" not in work.columns:
         return work
 
-    # Sesuai koreksi terbaru: pembagi 1.80 / 1.84 / 1.85 / 1.91
+    # Sesuai koreksi terbaru: pembagi 1.82 / 1.86 / 1.88 / 1.91
     divisors = {"out_tw1": 1.80, "out_tw2": 1.84, "out_tw3": 1.85, "out_tw4": 1.91}
 
     sim = simulasi_df.copy()

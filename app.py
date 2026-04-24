@@ -1,8 +1,8 @@
-
 from io import BytesIO
 from pathlib import Path
 from typing import Optional, Tuple, Union
 from urllib.request import urlopen
+import html
 
 import pandas as pd
 import plotly.express as px
@@ -16,7 +16,6 @@ st.set_page_config(
 )
 
 REPO_FILE_NAME = "dashboard PDB.xlsx"
-
 try:
     GITHUB_RAW_XLSX_URL = st.secrets.get("github_raw_xlsx_url", "")
 except Exception:
@@ -28,6 +27,7 @@ ACCENT = "#E07B39"
 PURPLE = "#8A5CF6"
 NEGATIVE = "#D14D72"
 GRID = "rgba(31,41,55,0.12)"
+TEXT = "#1F2937"
 
 PERIOD_MAP = {
     "out_tw1": "Q1",
@@ -78,51 +78,105 @@ DEFAULT_ROWS = {
     "pdb": PDB_COMPONENTS,
 }
 
-# Setiap rule dihitung dengan formula:
-# impact = ((shock - apbn_2026) / step) * coef
-# impacts berisi dampak ke pos fiskal tertentu:
-# pp   = 1. Penerimaan Perpajakan
-# pnbp = 2. Penerimaan Negara Bukan Pajak
-# bpp  = 1. Belanja Pemerintah Pusat
-MACRO_FISKAL_RULES = {
-    "Pertumbuhan ekonomi (%)": {
-        "step": 0.1,
-        "impacts": {"pp": 2080.30},
-    },
-    "Inflasi (%)": {
-        "step": 0.1,
-        "impacts": {"pp": 1862.99},
-    },
-    "Tingkat bunga SUN 10 tahun": {
-        "step": 0.1,
-        "impacts": {"bpp": 1899.98},
-    },
-    "Nilai tukar (Rp100/US$1)": {
-        "step": 100.0,
-        "impacts": {
-            "pp": 3481.10,
-            "pnbp": 1831.36,
-            "bpp": 6094.48,
-        },
-    },
-    "Harga minyak (US$/barel)": {
-        "step": 1.0,
-        "impacts": {
-            "pp": 1911.93,
-            "pnbp": 1576.88,
-            "bpp": 10286.40,
-        },
-    },
-    "Lifting minyak (ribu barel per hari)": {
-        "step": 10.0,
-        "impacts": {
-            "pp": 265.64,
-            "pnbp": 1518.17,
-        },
-    },
-}
+st.markdown(
+    """
+    <style>
+        .comparison-wrap {
+            overflow-x: auto;
+            margin-bottom: 0.5rem;
+        }
+        table.comparison-table {
+            border-collapse: collapse;
+            width: 100%;
+            min-width: 1200px;
+            font-size: 0.92rem;
+        }
+        table.comparison-table th,
+        table.comparison-table td {
+            border: 1px solid #D1D5DB;
+            padding: 0.50rem 0.60rem;
+            text-align: center;
+            white-space: nowrap;
+        }
+        table.comparison-table th:first-child,
+        table.comparison-table td:first-child {
+            text-align: left;
+        }
+        table.comparison-table thead th {
+            background: #F3F4F6;
+            font-weight: 700;
+        }
+        .value-up {
+            background: #E8F7F2;
+            color: #127A5A;
+            font-weight: 700;
+        }
+        .value-down {
+            background: #FDEBEC;
+            color: #B42318;
+            font-weight: 700;
+        }
+        .value-same {
+            background: #FFFFFF;
+            color: #111827;
+        }
+        .value-missing {
+            background: #FAFAFA;
+            color: #6B7280;
+            font-style: italic;
+        }
+        .legend-row {
+            display: flex;
+            gap: 1rem;
+            margin-top: 0.5rem;
+            flex-wrap: wrap;
+            font-size: 0.85rem;
+        }
+        .legend-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .legend-swatch {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 1px solid #D1D5DB;
+        }
+        .legend-up { background: #E8F7F2; }
+        .legend-down { background: #FDEBEC; }
+        .legend-same { background: #FFFFFF; }
+        .muted-note {
+            color: #6B7280;
+            font-size: 0.88rem;
+            margin-top: 0.45rem;
+        }
+        .fiskal-table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 0.5rem;
+        }
+        .fiskal-table th,
+        .fiskal-table td {
+            border: 1px solid #D1D5DB;
+            padding: 0.55rem 0.70rem;
+            white-space: nowrap;
+        }
+        .fiskal-table thead th {
+            background: #F3F4F6;
+            font-weight: 700;
+        }
+        .fiskal-table tbody tr:nth-child(even) {
+            background: #FAFAFA;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-
+# =========================
+# Helper formatting
+# =========================
 def normalize_col_name(name: object) -> str:
     return str(name).strip().lower().replace(" ", "_").replace(".", "").replace("-", "_")
 
@@ -142,7 +196,8 @@ def fmt_pct(val):
         return "—"
     try:
         s = f"{float(val):,.2f}"
-        return s.replace(",", "X").replace(".", ",").replace("X", ".") + "%"
+        s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+        return s + "%"
     except Exception:
         return str(val)
 
@@ -157,19 +212,33 @@ def fmt_dec1(val):
         return str(val)
 
 
-def fmt_fiskal_number(val, decimals: int = 2):
+def fmt_apbn_image(val):
     if val is None or pd.isna(val):
         return ""
     try:
         num = float(val)
-        fmt = f"{{:,.{decimals}f}}"
         if num < 0:
-            return f"({fmt.format(abs(num))})".replace(",", "X").replace(".", ",").replace("X", ".")
-        return fmt.format(num).replace(",", "X").replace(".", ",").replace("X", ".")
+            return f"({abs(num):,.0f})"
+        return f"{num:,.0f}"
     except Exception:
         return str(val)
 
 
+def fmt_fiskal_dampak(val):
+    if val is None or pd.isna(val):
+        return ""
+    try:
+        num = float(val)
+        if num < 0:
+            return f"({abs(num):,.2f})"
+        return f"{num:,.2f}"
+    except Exception:
+        return str(val)
+
+
+# =========================
+# Default DF utilities
+# =========================
 def empty_df(block: str) -> pd.DataFrame:
     rows = DEFAULT_ROWS.get(block, [])
     payload = {"indikator": rows}
@@ -181,17 +250,22 @@ def empty_df(block: str) -> pd.DataFrame:
 def ensure_schema(df: pd.DataFrame, block: str) -> pd.DataFrame:
     if df is None or df.empty:
         return empty_df(block)
+
     work = df.copy()
     work.columns = [normalize_col_name(c) for c in work.columns]
+
     if "indikator" not in work.columns and len(work.columns) > 0:
         work = work.rename(columns={work.columns[0]: "indikator"})
+
     for col in ["indikator", *PERIOD_ORDER]:
         if col not in work.columns:
             work[col] = None
+
     work = work[["indikator", *PERIOD_ORDER]].copy()
-    work["indikator"] = work["indikator"].astype(str).str.strip()
+
     if block in DEFAULT_ROWS:
         wanted = DEFAULT_ROWS[block]
+        work["indikator"] = work["indikator"].astype(str).str.strip()
         rows = []
         for ind in wanted:
             found = work.loc[work["indikator"] == ind]
@@ -200,6 +274,7 @@ def ensure_schema(df: pd.DataFrame, block: str) -> pd.DataFrame:
             else:
                 rows.append({"indikator": ind, **{c: None for c in PERIOD_ORDER}})
         work = pd.DataFrame(rows)
+
     for c in PERIOD_ORDER:
         work[c] = pd.to_numeric(work[c], errors="coerce")
     return work
@@ -217,6 +292,9 @@ def ensure_full_year_from_quarters(df: pd.DataFrame) -> pd.DataFrame:
     return work
 
 
+# =========================
+# Excel source loaders
+# =========================
 def load_excel_bytes_from_url(url: str) -> bytes:
     with urlopen(url) as resp:
         return resp.read()
@@ -233,15 +311,20 @@ def detect_excel_source() -> Tuple[Optional[Union[str, bytes]], str]:
     if local_path.exists():
         return str(local_path), f"Sumber data otomatis: {local_path.name} di folder repo"
     if GITHUB_RAW_XLSX_URL:
-        return load_excel_bytes_from_url(GITHUB_RAW_XLSX_URL), (
-            "Sumber data otomatis: GitHub Raw URL dari st.secrets['github_raw_xlsx_url']"
+        return (
+            load_excel_bytes_from_url(GITHUB_RAW_XLSX_URL),
+            "Sumber data otomatis: GitHub Raw URL dari st.secrets['github_raw_xlsx_url']",
         )
-    return None, (
+    return (
+        None,
         "File Excel belum ditemukan. Simpan dashboard PDB.xlsx di root repo yang sama dengan app.py, "
         "atau isi st.secrets['github_raw_xlsx_url']."
     )
 
 
+# =========================
+# PDB builder from 'realisasi'
+# =========================
 def _pick_col(columns, candidate: str):
     target = normalize_col_name(candidate)
     for c in columns:
@@ -250,7 +333,7 @@ def _pick_col(columns, candidate: str):
     return None
 
 
-def _build_period_table_from_realisasi(raw: pd.DataFrame, year: int = 2026) -> pd.DataFrame:
+def _build_period_table_from_realisasi(raw: pd.DataFrame) -> pd.DataFrame:
     row_map = {
         "Konsumsi RT": _pick_col(raw.columns, "Konsumsi RT"),
         "Konsumsi LNPRT": _pick_col(raw.columns, "Konsumsi LNPRT"),
@@ -261,6 +344,7 @@ def _build_period_table_from_realisasi(raw: pd.DataFrame, year: int = 2026) -> p
         "Change in Stocks": _pick_col(raw.columns, "Change in Stocks"),
         "Statistical Discrepancy": _pick_col(raw.columns, "Statistical Discrepancy"),
     }
+
     work = raw.copy().sort_values("tanggal")
     work["tahun"] = work["tanggal"].dt.year
     work["quarter"] = work["tanggal"].dt.quarter
@@ -269,49 +353,52 @@ def _build_period_table_from_realisasi(raw: pd.DataFrame, year: int = 2026) -> p
     for indikator, src in row_map.items():
         if src is None:
             continue
-        sy = work.loc[work["tahun"] == year, ["quarter", src]].copy()
+        s2026 = work.loc[work["tahun"] == 2026, ["quarter", src]].copy()
         quarter_values = {}
         for q in [1, 2, 3, 4]:
-            sel = sy.loc[sy["quarter"] == q, src]
+            sel = s2026.loc[s2026["quarter"] == q, src]
             quarter_values[f"out_tw{q}"] = float(sel.iloc[-1]) if not sel.empty else None
-        fy = sy[src].sum() if not sy.empty else None
+        fy = s2026[src].sum() if not s2026.empty else None
         rows.append({"indikator": indikator, **quarter_values, "full_year": fy})
 
     out = pd.DataFrame(rows)
-    if out.empty:
-        return empty_df("pdb")
 
-    idx = out.set_index("indikator")
-    agg_vals = {}
-    for c in PERIOD_ORDER:
-        def gv(name):
+    if not out.empty:
+        idx = out.set_index("indikator")
+        agg_vals = {}
+
+        def gv(name, col):
             try:
-                return pd.to_numeric(idx.loc[name, c], errors="coerce")
+                return pd.to_numeric(idx.loc[name, col], errors="coerce")
             except Exception:
                 return 0.0
-        agg_vals[c] = (
-            (0 if pd.isna(gv("Konsumsi RT")) else float(gv("Konsumsi RT")))
-            + (0 if pd.isna(gv("Konsumsi LNPRT")) else float(gv("Konsumsi LNPRT")))
-            + (0 if pd.isna(gv("PKP")) else float(gv("PKP")))
-            + (0 if pd.isna(gv("PMTB")) else float(gv("PMTB")))
-            + (0 if pd.isna(gv("Change in Stocks")) else float(gv("Change in Stocks")))
-            + (0 if pd.isna(gv("Ekspor")) else float(gv("Ekspor")))
-            - (0 if pd.isna(gv("Impor")) else float(gv("Impor")))
-            + (0 if pd.isna(gv("Statistical Discrepancy")) else float(gv("Statistical Discrepancy")))
+
+        for c in PERIOD_ORDER:
+            agg_vals[c] = (
+                (0 if pd.isna(gv("Konsumsi RT", c)) else float(gv("Konsumsi RT", c)))
+                + (0 if pd.isna(gv("Konsumsi LNPRT", c)) else float(gv("Konsumsi LNPRT", c)))
+                + (0 if pd.isna(gv("PKP", c)) else float(gv("PKP", c)))
+                + (0 if pd.isna(gv("PMTB", c)) else float(gv("PMTB", c)))
+                + (0 if pd.isna(gv("Change in Stocks", c)) else float(gv("Change in Stocks", c)))
+                + (0 if pd.isna(gv("Ekspor", c)) else float(gv("Ekspor", c)))
+                - (0 if pd.isna(gv("Impor", c)) else float(gv("Impor", c)))
+                + (0 if pd.isna(gv("Statistical Discrepancy", c)) else float(gv("Statistical Discrepancy", c)))
+            )
+
+        out = pd.concat(
+            [
+                out[out["indikator"] != "Statistical Discrepancy"],
+                pd.DataFrame([{"indikator": "PDB Aggregate", **agg_vals}]),
+            ],
+            ignore_index=True,
         )
 
-    out = pd.concat(
-        [
-            out[out["indikator"] != "Statistical Discrepancy"],
-            pd.DataFrame([{"indikator": "PDB Aggregate", **agg_vals}]),
-        ],
-        ignore_index=True,
-    )
     return ensure_schema(out, "pdb")
 
 
 def _build_level_history(raw: pd.DataFrame) -> pd.DataFrame:
     work = raw.copy().sort_values("tanggal")
+
     col_rt = _pick_col(work.columns, "Konsumsi RT")
     col_lnprt = _pick_col(work.columns, "Konsumsi LNPRT")
     col_pkp = _pick_col(work.columns, "PKP")
@@ -321,17 +408,21 @@ def _build_level_history(raw: pd.DataFrame) -> pd.DataFrame:
     col_stocks = _pick_col(work.columns, "Change in Stocks")
     col_disc = _pick_col(work.columns, "Statistical Discrepancy")
 
-    wide = pd.DataFrame({
-        "tanggal": work["tanggal"],
-        "Konsumsi RT": pd.to_numeric(work[col_rt], errors="coerce") if col_rt else None,
-        "Konsumsi LNPRT": pd.to_numeric(work[col_lnprt], errors="coerce") if col_lnprt else None,
-        "PKP": pd.to_numeric(work[col_pkp], errors="coerce") if col_pkp else None,
-        "PMTB": pd.to_numeric(work[col_pmtb], errors="coerce") if col_pmtb else None,
-        "Change in Stocks": pd.to_numeric(work[col_stocks], errors="coerce") if col_stocks else None,
-        "Ekspor": pd.to_numeric(work[col_exp], errors="coerce") if col_exp else None,
-        "Impor": pd.to_numeric(work[col_imp], errors="coerce") if col_imp else None,
-    })
+    wide = pd.DataFrame(
+        {
+            "tanggal": work["tanggal"],
+            "Konsumsi RT": pd.to_numeric(work[col_rt], errors="coerce") if col_rt else None,
+            "Konsumsi LNPRT": pd.to_numeric(work[col_lnprt], errors="coerce") if col_lnprt else None,
+            "PKP": pd.to_numeric(work[col_pkp], errors="coerce") if col_pkp else None,
+            "PMTB": pd.to_numeric(work[col_pmtb], errors="coerce") if col_pmtb else None,
+            "Change in Stocks": pd.to_numeric(work[col_stocks], errors="coerce") if col_stocks else None,
+            "Ekspor": pd.to_numeric(work[col_exp], errors="coerce") if col_exp else None,
+            "Impor": pd.to_numeric(work[col_imp], errors="coerce") if col_imp else None,
+        }
+    )
+
     discrepancy = pd.to_numeric(work[col_disc], errors="coerce") if col_disc else 0.0
+
     wide["PDB Aggregate"] = (
         wide["Konsumsi RT"].fillna(0)
         + wide["Konsumsi LNPRT"].fillna(0)
@@ -359,24 +450,36 @@ def _build_growth_tables_from_wide(wide: pd.DataFrame):
         s["nilai_fmt"] = s["nilai"].apply(fmt_id0)
         s["yoy"] = s["nilai"].pct_change(4) * 100
         s["qtq"] = s["nilai"].pct_change(1) * 100
+
         long_rows.append(s[["tanggal", "komponen", "nilai", "nilai_fmt"]])
         growth_rows.append(s[["tanggal", "komponen", "yoy", "qtq"]])
 
         s["tahun"] = s["tanggal"].dt.year
         s["quarter"] = s["tanggal"].dt.quarter
         s26 = s[s["tahun"] == 2026]
+
         yoy_row = {"indikator": comp}
         qtq_row = {"indikator": comp}
         for q in [1, 2, 3, 4]:
             sel = s26[s26["quarter"] == q]
-            yoy_row[date_map[q]] = float(sel["yoy"].iloc[-1]) if (not sel.empty and pd.notna(sel["yoy"].iloc[-1])) else None
-            qtq_row[date_map[q]] = float(sel["qtq"].iloc[-1]) if (not sel.empty and pd.notna(sel["qtq"].iloc[-1])) else None
+            yoy_row[date_map[q]] = (
+                float(sel["yoy"].iloc[-1]) if not sel.empty and pd.notna(sel["yoy"].iloc[-1]) else None
+            )
+            qtq_row[date_map[q]] = (
+                float(sel["qtq"].iloc[-1]) if not sel.empty and pd.notna(sel["qtq"].iloc[-1]) else None
+            )
+
         annual = s.groupby("tahun", as_index=False)["nilai"].sum()
         annual["yoy"] = annual["nilai"].pct_change(1) * 100
         annual26 = annual.loc[annual["tahun"] == 2026, "yoy"]
-        yoy_row["full_year"] = float(annual26.iloc[-1]) if (not annual26.empty and pd.notna(annual26.iloc[-1])) else None
-        qtq_non_null = s["qtq"].dropna()
-        qtq_row["full_year"] = float(qtq_non_null.iloc[-1]) if not qtq_non_null.empty else None
+
+        yoy_row["full_year"] = (
+            float(annual26.iloc[-1]) if not annual26.empty and pd.notna(annual26.iloc[-1]) else None
+        )
+        qtq_row["full_year"] = (
+            float(s["qtq"].dropna().iloc[-1]) if not s["qtq"].dropna().empty else None
+        )
+
         yoy_rows.append(yoy_row)
         qtq_rows.append(qtq_row)
 
@@ -393,13 +496,16 @@ def derive_pdb_from_realisasi(source: Union[str, bytes]):
     sheet_map = {s.lower().strip(): s for s in xls.sheet_names}
     if "realisasi" not in sheet_map:
         return empty_df("pdb"), None, None
+
     raw = pd.read_excel(xls, sheet_name=sheet_map["realisasi"], engine="openpyxl")
     raw = raw.rename(columns={raw.columns[0]: "tanggal"}).copy()
     raw["tanggal"] = pd.to_datetime(raw["tanggal"], errors="coerce")
     raw = raw.dropna(subset=["tanggal"]).sort_values("tanggal").reset_index(drop=True)
+
     pdb_df = _build_period_table_from_realisasi(raw)
     wide = _build_level_history(raw)
     level_long, growth_long, yoy_df, qtq_df = _build_growth_tables_from_wide(wide)
+
     return pdb_df, {"level": level_long, "growth": growth_long, "wide": wide}, {"yoy": yoy_df, "qtq": qtq_df}
 
 
@@ -407,38 +513,48 @@ def load_dashboard_data():
     data = {k: empty_df(k) for k in ["makro", "moneter", "fiskal", "pdb"]}
     pdb_history = None
     pdb_tables = None
+
     source, status = detect_excel_source()
     if source is None:
         return data, pdb_history, pdb_tables, status
+
     try:
         xls = open_excel_source(source)
         lower_sheet_map = {s.lower().strip(): s for s in xls.sheet_names}
+
         for block in ["makro", "moneter", "fiskal"]:
             if block in lower_sheet_map:
                 data[block] = ensure_schema(
                     pd.read_excel(xls, sheet_name=lower_sheet_map[block], engine="openpyxl"),
-                    block,
+                    block
                 )
+
         if "realisasi" in lower_sheet_map:
             data["pdb"], pdb_history, pdb_tables = derive_pdb_from_realisasi(source)
         elif "pdb" in lower_sheet_map:
             data["pdb"] = ensure_schema(
                 pd.read_excel(xls, sheet_name=lower_sheet_map["pdb"], engine="openpyxl"),
-                "pdb",
+                "pdb"
             )
+
         return data, pdb_history, pdb_tables, status
     except Exception as e:
         return data, pdb_history, pdb_tables, f"Gagal membaca sumber Excel otomatis: {e}"
 
 
+# =========================
+# Simulasi Fiskal
+# =========================
 def build_simulasi_fiskal_df() -> pd.DataFrame:
-    return pd.DataFrame({
-        "indikator": SIMULASI_FISKAL_ROWS,
-        "out_tw1": [0.0] * len(SIMULASI_FISKAL_ROWS),
-        "out_tw2": [0.0] * len(SIMULASI_FISKAL_ROWS),
-        "out_tw3": [0.0] * len(SIMULASI_FISKAL_ROWS),
-        "out_tw4": [0.0] * len(SIMULASI_FISKAL_ROWS),
-    })
+    return pd.DataFrame(
+        {
+            "indikator": SIMULASI_FISKAL_ROWS,
+            "out_tw1": [0.0] * len(SIMULASI_FISKAL_ROWS),
+            "out_tw2": [0.0] * len(SIMULASI_FISKAL_ROWS),
+            "out_tw3": [0.0] * len(SIMULASI_FISKAL_ROWS),
+            "out_tw4": [0.0] * len(SIMULASI_FISKAL_ROWS),
+        }
+    )
 
 
 def get_simulasi_fiskal_df() -> pd.DataFrame:
@@ -451,72 +567,91 @@ def get_simulasi_fiskal_df() -> pd.DataFrame:
     return df[["indikator", *SIMULASI_FISKAL_COLS]]
 
 
+# =========================
+# Simulasi Makro
+# =========================
 def build_simulasi_makro_df() -> pd.DataFrame:
-    return pd.DataFrame({
-        "indikator": [row[0] for row in SIMULASI_MAKRO_DEFAULTS],
-        "apbn_2026": [row[1] for row in SIMULASI_MAKRO_DEFAULTS],
-        "shock": [None] * len(SIMULASI_MAKRO_DEFAULTS),
-    })
+    return pd.DataFrame(
+        {
+            "indikator": [row[0] for row in SIMULASI_MAKRO_DEFAULTS],
+            "apbn_2026": [row[1] for row in SIMULASI_MAKRO_DEFAULTS],
+            "shock": [None] * len(SIMULASI_MAKRO_DEFAULTS),
+        }
+    )
 
 
 def get_simulasi_makro_df() -> pd.DataFrame:
     if "simulasi_makro_df" not in st.session_state:
         st.session_state["simulasi_makro_df"] = build_simulasi_makro_df()
+
     df = st.session_state["simulasi_makro_df"].copy()
     df["indikator"] = [row[0] for row in SIMULASI_MAKRO_DEFAULTS]
     df["apbn_2026"] = [row[1] for row in SIMULASI_MAKRO_DEFAULTS]
     df["shock"] = pd.to_numeric(df.get("shock"), errors="coerce")
+
     return df[["indikator", "apbn_2026", "shock"]]
 
 
-def calculate_macro_fiskal_impacts(simulasi_makro_df: Optional[pd.DataFrame]) -> dict:
-    detail = {
-        "pp": {},
-        "pnbp": {},
-        "bpp": {},
-        "pp_total": 0.0,
-        "pnbp_total": 0.0,
-        "bpp_total": 0.0,
-        "revenue_total": 0.0,
-        "spending_total": 0.0,
-    }
+def get_simulasi_makro_delta(simulasi_makro_df: Optional[pd.DataFrame], indikator: str) -> Optional[float]:
     if simulasi_makro_df is None or simulasi_makro_df.empty:
-        return detail
-
+        return None
     work = simulasi_makro_df.copy()
     work["indikator"] = work["indikator"].astype(str).str.strip()
+    row = work.loc[work["indikator"] == indikator]
+    if row.empty:
+        return None
 
-    for indikator, meta in MACRO_FISKAL_RULES.items():
-        row = work.loc[work["indikator"] == indikator]
-        if row.empty:
-            for target in meta["impacts"].keys():
-                detail[target][indikator] = 0.0
-            continue
-
-        apbn_val = pd.to_numeric(row.iloc[0].get("apbn_2026"), errors="coerce")
-        shock_val = pd.to_numeric(row.iloc[0].get("shock"), errors="coerce")
-
-        if pd.isna(apbn_val) or pd.isna(shock_val):
-            for target in meta["impacts"].keys():
-                detail[target][indikator] = 0.0
-            continue
-
-        delta = float(shock_val) - float(apbn_val)
-        step = float(meta["step"])
-
-        for target, coef in meta["impacts"].items():
-            impact_val = round((delta / step) * float(coef), 2) if step != 0 else 0.0
-            detail[target][indikator] = impact_val
-            detail[f"{target}_total"] = round(detail[f"{target}_total"] + impact_val, 2)
-
-    detail["revenue_total"] = round(detail["pp_total"] + detail["pnbp_total"], 2)
-    detail["spending_total"] = round(detail["bpp_total"], 2)
-    return detail
+    apbn_val = pd.to_numeric(row.iloc[0].get("apbn_2026"), errors="coerce")
+    shock_val = pd.to_numeric(row.iloc[0].get("shock"), errors="coerce")
+    if pd.isna(apbn_val) or pd.isna(shock_val):
+        return None
+    return float(shock_val) - float(apbn_val)
 
 
+def calculate_pertumbuhan_ekonomi_tax_impact(simulasi_makro_df: Optional[pd.DataFrame]) -> Optional[float]:
+    delta = get_simulasi_makro_delta(simulasi_makro_df, "Pertumbuhan ekonomi (%)")
+    if delta is None:
+        return None
+    dampak = (delta / 0.1) * 2080.30
+    return round(dampak, 2)
+
+
+def calculate_lifting_gas_bumi_impacts(simulasi_makro_df: Optional[pd.DataFrame]) -> dict:
+    """
+    Rule baru sesuai permintaan:
+    - Jika shock Lifting Gas Bumi = APBN + 10:
+      pp   += 390.99
+      pnbp += 870.10
+    - Jika shock Lifting Gas Bumi = APBN - 10:
+      pp   -= 390.99
+      pnbp -= 870.10
+
+    Formula linear:
+      factor = (shock - apbn) / 10
+      pp     = factor * 390.99
+      pnbp   = factor * 870.10
+    """
+    delta = get_simulasi_makro_delta(
+        simulasi_makro_df,
+        "Lifting Gas Bumi (ribu barel setara minyak per hari)"
+    )
+    if delta is None:
+        return {"pp": 0.0, "pnbp": 0.0}
+
+    factor = delta / 10.0
+    return {
+        "pp": round(factor * 390.99, 2),
+        "pnbp": round(factor * 870.10, 2),
+    }
+
+
+# =========================
+# Simulasi fiskal ke PDB nominal
+# =========================
 def apply_simulasi_fiskal_to_pdb_nominal(pdb_df: pd.DataFrame, simulasi_df: pd.DataFrame) -> pd.DataFrame:
     if pdb_df is None or pdb_df.empty:
         return pdb_df
+
     work = ensure_full_year_from_quarters(pdb_df.copy())
     sim = simulasi_df.copy()
     sim["indikator"] = sim["indikator"].astype(str).str.strip()
@@ -555,26 +690,36 @@ def apply_simulasi_fiskal_to_pdb_nominal(pdb_df: pd.DataFrame, simulasi_df: pd.D
     ]
 
     agg_mask = work["indikator"].astype(str).str.strip() == "PDB Aggregate"
+
     for rule in rules:
         sim_row = sim.loc[sim["indikator"] == rule["sim_indicator"]]
         if sim_row.empty:
             continue
+
         target_mask = work["indikator"].astype(str).str.strip() == rule["target_indicator"]
         if not target_mask.any():
             continue
+
         for col, div in rule["divisors"].items():
             input_val = pd.to_numeric(sim_row.iloc[0].get(col, 0.0), errors="coerce")
             input_val = 0.0 if pd.isna(input_val) else float(input_val)
             addition = input_val / div if div else 0.0
-            work.loc[target_mask, col] = pd.to_numeric(work.loc[target_mask, col], errors="coerce").fillna(0.0) + addition
+
+            work.loc[target_mask, col] = (
+                pd.to_numeric(work.loc[target_mask, col], errors="coerce").fillna(0.0) + addition
+            )
             if agg_mask.any():
-                work.loc[agg_mask, col] = pd.to_numeric(work.loc[agg_mask, col], errors="coerce").fillna(0.0) + addition
+                work.loc[agg_mask, col] = (
+                    pd.to_numeric(work.loc[agg_mask, col], errors="coerce").fillna(0.0) + addition
+                )
+
     return ensure_full_year_from_quarters(work)
 
 
 def build_adjusted_top_growth_tables(pdb_history: Optional[dict], adjusted_nominal: pd.DataFrame):
     if not pdb_history or pdb_history.get("wide") is None or adjusted_nominal is None or adjusted_nominal.empty:
         return {"yoy": empty_df("pdb"), "qtq": empty_df("pdb")}
+
     wide = pdb_history["wide"].copy()
     date_map = {
         "out_tw1": pd.Timestamp("2026-03-31"),
@@ -582,8 +727,10 @@ def build_adjusted_top_growth_tables(pdb_history: Optional[dict], adjusted_nomin
         "out_tw3": pd.Timestamp("2026-09-30"),
         "out_tw4": pd.Timestamp("2026-12-31"),
     }
+
     adj = adjusted_nominal.copy()
     adj["indikator"] = adj["indikator"].astype(str).str.strip()
+
     for _, row in adj.iterrows():
         indikator = row["indikator"]
         if indikator not in PDB_COMPONENTS:
@@ -592,18 +739,24 @@ def build_adjusted_top_growth_tables(pdb_history: Optional[dict], adjusted_nomin
             val = pd.to_numeric(row.get(col), errors="coerce")
             if pd.notna(val):
                 wide.loc[wide["tanggal"] == dt, indikator] = float(val)
+
     _, _, yoy_df, qtq_df = _build_growth_tables_from_wide(wide)
     return {"yoy": yoy_df, "qtq": qtq_df}
 
 
+# =========================
+# Render editors
+# =========================
 def render_simulasi_fiskal_editor() -> pd.DataFrame:
     st.markdown("### Simulasi Fiskal (dalam miliar)")
     st.caption(
         "Panel simulasi fiskal berada di bawah Tabel Utama. Setelah tombol diterapkan, "
         "Tabel Utama langsung menyesuaikan pada rerun berikutnya."
     )
+
     if "simulasi_fiskal_editor_version" not in st.session_state:
         st.session_state["simulasi_fiskal_editor_version"] = 0
+
     if "simulasi_fiskal_draft" not in st.session_state:
         st.session_state["simulasi_fiskal_draft"] = get_simulasi_fiskal_df().copy()
 
@@ -630,12 +783,14 @@ def render_simulasi_fiskal_editor() -> pd.DataFrame:
             "out_tw4": st.column_config.NumberColumn("Q4", format="%.2f", step=0.01, width="small"),
         },
     )
+
     edited_df = edited_df[["indikator", *SIMULASI_FISKAL_COLS]].copy()
     edited_df["indikator"] = SIMULASI_FISKAL_ROWS
     for c in SIMULASI_FISKAL_COLS:
         edited_df[c] = pd.to_numeric(edited_df[c], errors="coerce").fillna(0.0)
 
     st.session_state["simulasi_fiskal_draft"] = edited_df.copy()
+
     applied_df = get_simulasi_fiskal_df()
     has_pending = not edited_df[SIMULASI_FISKAL_COLS].reset_index(drop=True).equals(
         applied_df[SIMULASI_FISKAL_COLS].reset_index(drop=True)
@@ -645,8 +800,12 @@ def render_simulasi_fiskal_editor() -> pd.DataFrame:
     if c1.button("Terapkan Simulasi Fiskal", use_container_width=True, type="primary"):
         st.session_state["simulasi_fiskal_df"] = edited_df.copy()
         st.session_state["simulasi_fiskal_draft"] = edited_df.copy()
-        st.session_state["simulasi_fiskal_notice"] = ("success", "Simulasi fiskal berhasil diterapkan ke Tabel Utama.")
+        st.session_state["simulasi_fiskal_notice"] = (
+            "success",
+            "Simulasi fiskal berhasil diterapkan ke Tabel Utama.",
+        )
         st.rerun()
+
     if c2.button("Reset Simulasi Fiskal", use_container_width=True):
         reset_df = build_simulasi_fiskal_df()
         st.session_state["simulasi_fiskal_df"] = reset_df.copy()
@@ -660,24 +819,27 @@ def render_simulasi_fiskal_editor() -> pd.DataFrame:
         if has_pending else
         "Draft simulasi fiskal sudah sinkron dengan Tabel Utama."
     )
+
     notice = st.session_state.pop("simulasi_fiskal_notice", None)
     if notice:
         level, msg = notice
         getattr(st, level if level in {"success", "warning", "error", "info"} else "info")(msg)
+
     return applied_df
 
 
 def render_simulasi_makro_editor() -> pd.DataFrame:
     st.markdown("### Simulasi Asumsi Dasar Ekonomi Makro")
     st.caption(
-        "Kolom APBN 2026 bersifat tetap, sedangkan kolom Shock dapat diisi untuk simulasi. "
-        "Perubahan pada Pertumbuhan ekonomi (%) dan Inflasi (%) memengaruhi Dampak pada Penerimaan Perpajakan. "
-        "Perubahan pada Tingkat bunga SUN 10 tahun memengaruhi Dampak pada Belanja Pemerintah Pusat. "
-        "Perubahan pada Nilai tukar (Rp100/US$1), Harga minyak (US$/barel), dan Lifting minyak "
-        "(ribu barel per hari) memengaruhi Dampak pada beberapa pos fiskal sekaligus."
+        "Tabel di bawah ini diletakkan di Blok Fiskal, tepat di bawah tabel fiskal. "
+        "Kolom APBN 2026 bersifat tetap, sedangkan kolom Shock sengaja dikosongkan agar dapat diisi untuk simulasi. "
+        "Shock Pertumbuhan ekonomi (%) sudah terhubung ke Penerimaan Perpajakan, dan shock "
+        "Lifting Gas Bumi sudah terhubung ke Penerimaan Perpajakan serta PNBP pada Blok Fiskal."
     )
+
     if "simulasi_makro_editor_version" not in st.session_state:
         st.session_state["simulasi_makro_editor_version"] = 0
+
     if "simulasi_makro_draft" not in st.session_state:
         st.session_state["simulasi_makro_draft"] = get_simulasi_makro_df().copy()
 
@@ -701,12 +863,14 @@ def render_simulasi_makro_editor() -> pd.DataFrame:
             "shock": st.column_config.NumberColumn("Shock", format="%.1f", step=0.1, width="small"),
         },
     )
+
     edited_df = edited_df[["indikator", "apbn_2026", "shock"]].copy()
     edited_df["indikator"] = [row[0] for row in SIMULASI_MAKRO_DEFAULTS]
     edited_df["apbn_2026"] = [row[1] for row in SIMULASI_MAKRO_DEFAULTS]
     edited_df["shock"] = pd.to_numeric(edited_df["shock"], errors="coerce")
 
     st.session_state["simulasi_makro_draft"] = edited_df.copy()
+
     applied_df = get_simulasi_makro_df()
     has_pending = not edited_df[["shock"]].reset_index(drop=True).equals(
         applied_df[["shock"]].reset_index(drop=True)
@@ -718,12 +882,16 @@ def render_simulasi_makro_editor() -> pd.DataFrame:
         st.session_state["simulasi_makro_draft"] = edited_df.copy()
         st.session_state["simulasi_makro_notice"] = ("success", "Input shock makro berhasil disimpan.")
         st.rerun()
+
     if c2.button("Reset Shock Makro", use_container_width=True):
         reset_df = build_simulasi_makro_df()
         st.session_state["simulasi_makro_df"] = reset_df.copy()
         st.session_state["simulasi_makro_draft"] = reset_df.copy()
         st.session_state["simulasi_makro_editor_version"] += 1
-        st.session_state["simulasi_makro_notice"] = ("success", "Kolom shock makro telah dikosongkan kembali.")
+        st.session_state["simulasi_makro_notice"] = (
+            "success",
+            "Kolom shock makro telah dikosongkan kembali."
+        )
         st.rerun()
 
     st.caption(
@@ -732,33 +900,38 @@ def render_simulasi_makro_editor() -> pd.DataFrame:
         "Input shock makro sudah sinkron."
     )
 
-    preview = calculate_macro_fiskal_impacts(edited_df)
-    st.info(
-        "Preview draft saat ini: "
-        f"Dampak PP = {fmt_fiskal_number(preview.get('pp_total', 0.0), 2)}, "
-        f"Dampak PNBP = {fmt_fiskal_number(preview.get('pnbp_total', 0.0), 2)}, "
-        f"Dampak BPP = {fmt_fiskal_number(preview.get('bpp_total', 0.0), 2)}."
-    )
-
     notice = st.session_state.pop("simulasi_makro_notice", None)
     if notice:
         level, msg = notice
         getattr(st, level if level in {"success", "warning", "error", "info"} else "info")(msg)
+
     return applied_df
 
 
+# =========================
+# Display utilities
+# =========================
 def dataframe_for_display(df: pd.DataFrame, pct: bool = False, hide_rows=None) -> pd.DataFrame:
     view = df.copy()
     if hide_rows:
         view = view[~view["indikator"].isin(hide_rows)].copy()
-    view = view[["indikator", *PERIOD_ORDER]].rename(columns={"indikator": "Indikator", **PERIOD_MAP})
+
+    view = view[["indikator", *PERIOD_ORDER]].rename(
+        columns={"indikator": "Indikator", **PERIOD_MAP}
+    )
+
     for c in view.columns[1:]:
         view[c] = view[c].apply(fmt_pct if pct else fmt_id0)
+
     return view
 
 
 def render_table(df: pd.DataFrame, pct: bool = False, hide_rows=None):
-    st.dataframe(dataframe_for_display(df, pct=pct, hide_rows=hide_rows), use_container_width=True, hide_index=True)
+    st.dataframe(
+        dataframe_for_display(df, pct=pct, hide_rows=hide_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
 def _lookup_value(df: pd.DataFrame, indikator: str, col: str):
@@ -773,32 +946,103 @@ def _lookup_value(df: pd.DataFrame, indikator: str, col: str):
     return series.iloc[0]
 
 
-def build_main_comparison_df(
+def _compare_class(baseline_val, compare_val, tol: float = 1e-12) -> str:
+    if pd.isna(compare_val) or compare_val is None:
+        return "value-missing"
+    if pd.isna(baseline_val) or baseline_val is None:
+        return "value-same"
+    try:
+        base = float(baseline_val)
+        comp = float(compare_val)
+    except Exception:
+        return "value-same"
+    diff = comp - base
+    if abs(diff) <= tol:
+        return "value-same"
+    return "value-up" if diff > 0 else "value-down"
+
+
+def _format_compare_cell(value, formatter, css_class: str = "value-same") -> str:
+    return f'<td class="{css_class}">{formatter(value)}</td>'
+
+
+def build_main_comparison_table_html(
     baseline_df: pd.DataFrame,
     shock_fiskal_df: pd.DataFrame,
     shock_makro_df: Optional[pd.DataFrame] = None,
     formatter=fmt_id0,
-) -> pd.DataFrame:
+    note_text: Optional[str] = None,
+) -> str:
     baseline_df = ensure_schema(baseline_df, "pdb") if "indikator" in baseline_df.columns else baseline_df
-    shock_fiskal_df = ensure_schema(shock_fiskal_df, "pdb") if "indikator" in shock_fiskal_df.columns else shock_fiskal_df
+    shock_fiskal_df = (
+        ensure_schema(shock_fiskal_df, "pdb") if "indikator" in shock_fiskal_df.columns else shock_fiskal_df
+    )
     if shock_makro_df is None:
         shock_makro_df = shock_fiskal_df.copy()
     else:
-        shock_makro_df = ensure_schema(shock_makro_df, "pdb") if "indikator" in shock_makro_df.columns else shock_makro_df
+        shock_makro_df = (
+            ensure_schema(shock_makro_df, "pdb") if "indikator" in shock_makro_df.columns else shock_makro_df
+        )
 
-    rows = []
+    header_html = """
+    <div class="comparison-wrap">
+    <table class="comparison-table">
+        <thead>
+            <tr>
+                <th rowspan="2">Indikator</th>
+                <th colspan="2">Q1</th>
+                <th colspan="2">Q2</th>
+                <th colspan="2">Q3</th>
+                <th colspan="2">Q4</th>
+                <th colspan="3">Full Year</th>
+            </tr>
+            <tr>
+                <th>Baseline</th><th>Shock Fiskal</th>
+                <th>Baseline</th><th>Shock Fiskal</th>
+                <th>Baseline</th><th>Shock Fiskal</th>
+                <th>Baseline</th><th>Shock Fiskal</th>
+                <th>Baseline</th><th>Shock Fiskal</th><th>Shock Makro</th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+
+    body_rows = []
+    periods = ["out_tw1", "out_tw2", "out_tw3", "out_tw4"]
+
     for indikator in PDB_MAIN_ROWS:
-        row = {"Indikator": indikator}
-        for col, label in PERIOD_MAP.items():
-            if col == "full_year":
-                row[f"{label} - Baseline"] = formatter(_lookup_value(baseline_df, indikator, col))
-                row[f"{label} - Shock Fiskal"] = formatter(_lookup_value(shock_fiskal_df, indikator, col))
-                row[f"{label} - Shock Makro"] = formatter(_lookup_value(shock_makro_df, indikator, col))
-            else:
-                row[f"{label} - Baseline"] = formatter(_lookup_value(baseline_df, indikator, col))
-                row[f"{label} - Shock Fiskal"] = formatter(_lookup_value(shock_fiskal_df, indikator, col))
-        rows.append(row)
-    return pd.DataFrame(rows)
+        cells = [f"<td>{html.escape(indikator)}</td>"]
+        for col in periods:
+            base_val = _lookup_value(baseline_df, indikator, col)
+            fiskal_val = _lookup_value(shock_fiskal_df, indikator, col)
+            cells.append(_format_compare_cell(base_val, formatter, "value-same"))
+            cells.append(_format_compare_cell(fiskal_val, formatter, _compare_class(base_val, fiskal_val)))
+
+        base_fy = _lookup_value(baseline_df, indikator, "full_year")
+        fiskal_fy = _lookup_value(shock_fiskal_df, indikator, "full_year")
+        makro_fy = _lookup_value(shock_makro_df, indikator, "full_year")
+
+        cells.append(_format_compare_cell(base_fy, formatter, "value-same"))
+        cells.append(_format_compare_cell(fiskal_fy, formatter, _compare_class(base_fy, fiskal_fy)))
+        cells.append(_format_compare_cell(makro_fy, formatter, _compare_class(base_fy, makro_fy)))
+
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    footer_html = """
+        </tbody>
+    </table>
+    </div>
+    <div class="legend-row">
+        <span class="legend-badge"><span class="legend-swatch legend-up"></span> Lebih tinggi dari baseline</span>
+        <span class="legend-badge"><span class="legend-swatch legend-down"></span> Lebih rendah dari baseline</span>
+        <span class="legend-badge"><span class="legend-swatch legend-same"></span> Sama dengan baseline</span>
+    </div>
+    """
+
+    html_out = header_html + "".join(body_rows) + footer_html
+    if note_text:
+        html_out += f'<div class="muted-note">{html.escape(note_text)}</div>'
+    return html_out
 
 
 def render_main_comparison_table(
@@ -808,22 +1052,28 @@ def render_main_comparison_table(
     formatter=fmt_id0,
     note_text: Optional[str] = None,
 ):
-    out = build_main_comparison_df(
+    html_table = build_main_comparison_table_html(
         baseline_df=baseline_df,
         shock_fiskal_df=shock_fiskal_df,
         shock_makro_df=shock_makro_df,
         formatter=formatter,
+        note_text=note_text,
     )
-    st.dataframe(out, use_container_width=True, hide_index=True)
-    if note_text:
-        st.caption(note_text)
+    st.markdown(html_table, unsafe_allow_html=True)
 
 
+# =========================
+# Blok Fiskal
+# =========================
 def render_fiskal_block_table(simulasi_makro_df: Optional[pd.DataFrame] = None):
-    impacts = calculate_macro_fiskal_impacts(simulasi_makro_df)
-    dampak_pp = round(impacts.get("pp_total", 0.0), 2)
-    dampak_pnbp = round(impacts.get("pnbp_total", 0.0), 2)
-    dampak_bpp = round(impacts.get("bpp_total", 0.0), 2)
+    # Dampak dari pertumbuhan ekonomi
+    d_pp_pertumbuhan = calculate_pertumbuhan_ekonomi_tax_impact(simulasi_makro_df)
+    d_pp_pertumbuhan = 0.0 if d_pp_pertumbuhan is None else d_pp_pertumbuhan
+
+    # Dampak dari lifting gas bumi (rule baru)
+    lifting_gas_impacts = calculate_lifting_gas_bumi_impacts(simulasi_makro_df)
+    d_pp_gas = lifting_gas_impacts.get("pp", 0.0)
+    d_pnbp_gas = lifting_gas_impacts.get("pnbp", 0.0)
 
     apbn = {
         "pp": 2693714,
@@ -832,11 +1082,12 @@ def render_fiskal_block_table(simulasi_makro_df: Optional[pd.DataFrame] = None):
         "bpp": 3149733,
         "tkd": 692995,
     }
+
     dampak = {
-        "pp": dampak_pp,
-        "pnbp": dampak_pnbp,
+        "pp": d_pp_pertumbuhan + d_pp_gas,
+        "pnbp": d_pnbp_gas,
         "hibah": 0.0,
-        "bpp": dampak_bpp,
+        "bpp": 0.0,
         "tkd": 0.0,
     }
 
@@ -850,53 +1101,67 @@ def render_fiskal_block_table(simulasi_makro_df: Optional[pd.DataFrame] = None):
     dampak_C = dampak_A - dampak_B
     dampak_D = -dampak_C
 
-    def outlook(a, d):
-        return a + d
+    outlook = lambda a, d: a + d
 
     fiskal_rows = [
-        {"Uraian": "A. Pendapatan Negara dan Hibah", "APBN 2026": apbn_A, "Dampak": dampak_A, "Outlook": outlook(apbn_A, dampak_A)},
-        {"Uraian": "1. Penerimaan Perpajakan", "APBN 2026": apbn["pp"], "Dampak": dampak["pp"], "Outlook": outlook(apbn["pp"], dampak["pp"])},
-        {"Uraian": "2. Penerimaan Negara Bukan Pajak", "APBN 2026": apbn["pnbp"], "Dampak": dampak["pnbp"], "Outlook": outlook(apbn["pnbp"], dampak["pnbp"])},
-        {"Uraian": "3. Hibah", "APBN 2026": apbn["hibah"], "Dampak": dampak["hibah"], "Outlook": outlook(apbn["hibah"], dampak["hibah"])},
-        {"Uraian": "B. Belanja Negara", "APBN 2026": apbn_B, "Dampak": dampak_B, "Outlook": outlook(apbn_B, dampak_B)},
-        {"Uraian": "1. Belanja Pemerintah Pusat", "APBN 2026": apbn["bpp"], "Dampak": dampak["bpp"], "Outlook": outlook(apbn["bpp"], dampak["bpp"])},
-        {"Uraian": "2. Transfer ke Daerah", "APBN 2026": apbn["tkd"], "Dampak": dampak["tkd"], "Outlook": outlook(apbn["tkd"], dampak["tkd"])},
-        {"Uraian": "C. Surplus/Defisit", "APBN 2026": apbn_C, "Dampak": dampak_C, "Outlook": outlook(apbn_C, dampak_C)},
-        {"Uraian": "D. Pembiayaan Anggaran", "APBN 2026": apbn_D, "Dampak": dampak_D, "Outlook": outlook(apbn_D, dampak_D)},
+        {"uraian": "A. Pendapatan Negara dan Hibah", "apbn": apbn_A, "dampak": dampak_A, "outlook": outlook(apbn_A, dampak_A), "bold": True},
+        {"uraian": "1. Penerimaan Perpajakan", "apbn": apbn["pp"], "dampak": dampak["pp"], "outlook": outlook(apbn["pp"], dampak["pp"]), "bold": False},
+        {"uraian": "2. Penerimaan Negara Bukan Pajak", "apbn": apbn["pnbp"], "dampak": dampak["pnbp"], "outlook": outlook(apbn["pnbp"], dampak["pnbp"]), "bold": False},
+        {"uraian": "3. Hibah", "apbn": apbn["hibah"], "dampak": dampak["hibah"], "outlook": outlook(apbn["hibah"], dampak["hibah"]), "bold": False},
+        {"uraian": "B. Belanja Negara", "apbn": apbn_B, "dampak": dampak_B, "outlook": outlook(apbn_B, dampak_B), "bold": True},
+        {"uraian": "1. Belanja Pemerintah Pusat", "apbn": apbn["bpp"], "dampak": dampak["bpp"], "outlook": outlook(apbn["bpp"], dampak["bpp"]), "bold": False},
+        {"uraian": "2. Transfer ke Daerah", "apbn": apbn["tkd"], "dampak": dampak["tkd"], "outlook": outlook(apbn["tkd"], dampak["tkd"]), "bold": False},
+        {"uraian": "C. Surplus/Defisit", "apbn": apbn_C, "dampak": dampak_C, "outlook": outlook(apbn_C, dampak_C), "bold": True},
+        {"uraian": "D. Pembiayaan Anggaran", "apbn": apbn_D, "dampak": dampak_D, "outlook": outlook(apbn_D, dampak_D), "bold": True},
     ]
 
-    tbl = pd.DataFrame(fiskal_rows)
-    tbl_display = tbl.copy()
-    tbl_display["APBN 2026"] = tbl_display["APBN 2026"].apply(lambda x: fmt_fiskal_number(x, 0))
-    tbl_display["Dampak"] = tbl_display["Dampak"].apply(lambda x: fmt_fiskal_number(x, 2))
-    tbl_display["Outlook"] = tbl_display["Outlook"].apply(lambda x: fmt_fiskal_number(x, 2))
-    st.dataframe(tbl_display, use_container_width=True, hide_index=True)
+    rows = []
+    for r in fiskal_rows:
+        fw = "font-weight:700;" if r["bold"] else ""
+        rows.append(
+            f"<tr>"
+            f"<td style='text-align:left;{fw}'>{r['uraian']}</td>"
+            f"<td style='text-align:right;{fw}'>{fmt_apbn_image(r['apbn'])}</td>"
+            f"<td style='text-align:right;{fw}'>{fmt_fiskal_dampak(r['dampak'])}</td>"
+            f"<td style='text-align:right;{fw}'>{fmt_fiskal_dampak(r['outlook'])}</td>"
+            f"</tr>"
+        )
 
-    detail_sections = []
-    if impacts.get("pp"):
-        detail_sections.append("Rincian pembentuk Dampak pada '1. Penerimaan Perpajakan':")
-        for name, val in impacts["pp"].items():
-            detail_sections.append(f"- {name}: {fmt_fiskal_number(val, 2)}")
-    if impacts.get("pnbp"):
-        detail_sections.append("")
-        detail_sections.append("Rincian pembentuk Dampak pada '2. Penerimaan Negara Bukan Pajak':")
-        for name, val in impacts["pnbp"].items():
-            detail_sections.append(f"- {name}: {fmt_fiskal_number(val, 2)}")
-    if impacts.get("bpp"):
-        detail_sections.append("")
-        detail_sections.append("Rincian pembentuk Dampak pada '1. Belanja Pemerintah Pusat':")
-        for name, val in impacts["bpp"].items():
-            detail_sections.append(f"- {name}: {fmt_fiskal_number(val, 2)}")
-    if detail_sections:
-        st.caption("\n".join(detail_sections))
+    html_tbl = (
+        '<table class="fiskal-table">'
+        "<thead>"
+        "<tr>"
+        '<th style="text-align:left;">Uraian</th>'
+        '<th style="text-align:right;">APBN 2026</th>'
+        '<th style="text-align:right;">Dampak</th>'
+        '<th style="text-align:right;">Outlook</th>'
+        "</tr>"
+        "</thead>"
+        "<tbody>"
+        f"{''.join(rows)}"
+        "</tbody>"
+        "</table>"
+    )
+
+    st.markdown(html_tbl, unsafe_allow_html=True)
+    st.caption(
+        "Format tabel fiskal menampilkan kolom APBN 2026, Dampak, dan Outlook, dengan struktur A/B/C/D dan sub-uraian. "
+        "Shock Pertumbuhan ekonomi (%) memengaruhi Penerimaan Perpajakan. "
+        "Shock Lifting Gas Bumi memengaruhi Penerimaan Perpajakan dan PNBP secara linear terhadap deviasi dari APBN 2026."
+    )
 
 
+# =========================
+# Charts
+# =========================
 def make_history_chart(pdb_history: Optional[dict], selected_components):
     if not pdb_history or pdb_history.get("level") is None or pdb_history["level"].empty:
         st.info("Data historis PDB belum tersedia.")
         return
+
     plot_df = pdb_history["level"].copy()
     plot_df = plot_df[plot_df["komponen"].isin(selected_components)]
+
     fig = px.line(
         plot_df,
         x="tanggal",
@@ -921,9 +1186,11 @@ def make_growth_chart(pdb_history: Optional[dict], selected_components, growth_c
     if not pdb_history or pdb_history.get("growth") is None or pdb_history["growth"].empty:
         st.info("Data pertumbuhan PDB belum tersedia.")
         return
+
     plot_df = pdb_history["growth"].copy()
     plot_df = plot_df[plot_df["komponen"].isin(selected_components)]
     plot_df["fmt"] = plot_df[growth_col].apply(fmt_pct)
+
     fig = px.line(
         plot_df,
         x="tanggal",
@@ -945,7 +1212,9 @@ def make_growth_chart(pdb_history: Optional[dict], selected_components, growth_c
     st.plotly_chart(fig, use_container_width=True)
 
 
-# ===== Main App =====
+# =========================
+# Main App
+# =========================
 workbook, pdb_history, pdb_tables, source_status = load_dashboard_data()
 
 st.sidebar.markdown("## Pengaturan Dashboard")
@@ -965,21 +1234,21 @@ adjusted_pdb_nominal = apply_simulasi_fiskal_to_pdb_nominal(baseline_pdb_nominal
 
 baseline_top_yoy = pdb_tables["yoy"] if pdb_tables else empty_df("pdb")
 baseline_top_qtq = pdb_tables["qtq"] if pdb_tables else empty_df("pdb")
+
 adjusted_top_tables = build_adjusted_top_growth_tables(pdb_history, adjusted_pdb_nominal)
 adjusted_top_yoy = adjusted_top_tables.get("yoy", empty_df("pdb"))
 adjusted_top_qtq = adjusted_top_tables.get("qtq", empty_df("pdb"))
 
 st.markdown("## Tabel Utama — Blok Accounting")
 st.caption(
-    "Tampilan utama menggunakan layout tabel datar. Kolom Shock Makro pada tabel utama masih mengikuti Shock Fiskal. "
-    "Input asumsi shock makro sudah dihubungkan ke Blok Fiskal untuk menghitung dampak fiskal."
+    "Tampilan utama menggunakan layout scroll horizontal. "
+    "Kolom Shock Makro pada tabel utama masih mengikuti Shock Fiskal. "
+    "Input asumsi shock makro disediakan di Blok Fiskal; integrasi ke tabel utama bisa ditambahkan pada tahap berikutnya."
 )
 
-top_nominal_tab, top_yoy_tab, top_qtq_tab = st.tabs([
-    "Tabel Nominal 2026",
-    "Tabel Year on Year (YoY)",
-    "Tabel Quarter to Quarter (QtQ)",
-])
+top_nominal_tab, top_yoy_tab, top_qtq_tab = st.tabs(
+    ["Tabel Nominal 2026", "Tabel Year on Year (YoY)", "Tabel Quarter to Quarter (QtQ)"]
+)
 
 with top_nominal_tab:
     render_main_comparison_table(
@@ -987,27 +1256,40 @@ with top_nominal_tab:
         shock_fiskal_df=adjusted_pdb_nominal,
         shock_makro_df=adjusted_pdb_nominal,
         formatter=fmt_id0,
-        note_text="Kolom Shock Makro pada tabel utama masih mengikuti Shock Fiskal.",
+        note_text=(
+            "Kolom Shock Makro pada tabel utama masih mengikuti Shock Fiskal. "
+            "Tabel input shock makro tersedia di Blok Fiskal di bawah tabel fiskal."
+        ),
     )
+
 with top_yoy_tab:
     render_main_comparison_table(
         baseline_df=baseline_top_yoy,
         shock_fiskal_df=adjusted_top_yoy,
         shock_makro_df=adjusted_top_yoy,
         formatter=fmt_pct,
-        note_text="Tabel YoY menggunakan hasil pertumbuhan dari baseline dan penyesuaian shock fiskal.",
+        note_text=(
+            "Tabel YoY memakai layout scroll horizontal. Nilai Shock Makro di tabel utama "
+            "masih mengikuti Shock Fiskal sampai formula makro dihubungkan."
+        ),
     )
+
 with top_qtq_tab:
     render_main_comparison_table(
         baseline_df=baseline_top_qtq,
         shock_fiskal_df=adjusted_top_qtq,
         shock_makro_df=adjusted_top_qtq,
         formatter=fmt_pct,
-        note_text="Tabel QtQ menggunakan hasil pertumbuhan dari baseline dan penyesuaian shock fiskal.",
+        note_text=(
+            "Tabel QtQ memakai layout scroll horizontal. Input shock makro disimpan tersendiri di Blok Fiskal."
+        ),
     )
 
 simulasi_fiskal_df = render_simulasi_fiskal_editor()
-makro_tab, pdb_tab, moneter_tab, fiskal_tab = st.tabs(["Blok Makro", "Blok Accounting", "Blok Moneter", "Blok Fiskal"])
+
+makro_tab, pdb_tab, moneter_tab, fiskal_tab = st.tabs(
+    ["Blok Makro", "Blok Accounting", "Blok Moneter", "Blok Fiskal"]
+)
 
 with makro_tab:
     st.markdown("## Blok Makro")
@@ -1015,17 +1297,25 @@ with makro_tab:
 
 with pdb_tab:
     st.markdown("## Accounting / PDB")
-    nominal_tab, yoy_tab, qtq_tab = st.tabs(["Tabel Nominal 2026", "Tabel Year on Year (YoY)", "Tabel Quarter to Quarter (QtQ)"])
+
+    nominal_tab, yoy_tab, qtq_tab = st.tabs(
+        ["Tabel Nominal 2026", "Tabel Year on Year (YoY)", "Tabel Quarter to Quarter (QtQ)"]
+    )
+
     with nominal_tab:
         render_table(workbook["pdb"])
+
     with yoy_tab:
         render_table(
-            pdb_tables["yoy"][~pdb_tables["yoy"]["indikator"].isin(EXCLUDE_GROWTH_ROWS)] if pdb_tables else empty_df("pdb"),
+            pdb_tables["yoy"][~pdb_tables["yoy"]["indikator"].isin(EXCLUDE_GROWTH_ROWS)]
+            if pdb_tables else empty_df("pdb"),
             pct=True,
         )
+
     with qtq_tab:
         render_table(
-            pdb_tables["qtq"][~pdb_tables["qtq"]["indikator"].isin(EXCLUDE_GROWTH_ROWS)] if pdb_tables else empty_df("pdb"),
+            pdb_tables["qtq"][~pdb_tables["qtq"]["indikator"].isin(EXCLUDE_GROWTH_ROWS)]
+            if pdb_tables else empty_df("pdb"),
             pct=True,
         )
 
@@ -1035,9 +1325,12 @@ with pdb_tab:
         default=PDB_COMPONENTS,
     )
     selected_components = selected_components or PDB_COMPONENTS
+
     hist_tab, yoyc_tab, qtqc_tab = st.tabs(["Historis Level", "Year on Year (YoY)", "Quarter to Quarter (QtQ)"])
+
     with hist_tab:
         make_history_chart(pdb_history, selected_components)
+
     with yoyc_tab:
         make_growth_chart(
             pdb_history,
@@ -1045,6 +1338,7 @@ with pdb_tab:
             "yoy",
             "Pertumbuhan Year on Year (YoY)",
         )
+
     with qtqc_tab:
         make_growth_chart(
             pdb_history,
@@ -1067,22 +1361,31 @@ if show_preview:
     with st.expander("Preview data yang berhasil dimuat", expanded=False):
         st.markdown("### Preview simulasi fiskal editable")
         st.dataframe(simulasi_fiskal_df, use_container_width=True, hide_index=True)
+
         st.markdown("### Preview baseline PDB nominal")
         st.dataframe(baseline_pdb_nominal, use_container_width=True, hide_index=True)
+
         st.markdown("### Preview shock fiskal / shock makro PDB nominal")
         st.dataframe(adjusted_pdb_nominal, use_container_width=True, hide_index=True)
+
         st.markdown("### Preview baseline YoY")
         st.dataframe(baseline_top_yoy, use_container_width=True, hide_index=True)
+
         st.markdown("### Preview shock fiskal / shock makro YoY")
         st.dataframe(adjusted_top_yoy, use_container_width=True, hide_index=True)
+
         st.markdown("### Preview baseline QtQ")
         st.dataframe(baseline_top_qtq, use_container_width=True, hide_index=True)
+
         st.markdown("### Preview shock fiskal / shock makro QtQ")
         st.dataframe(adjusted_top_qtq, use_container_width=True, hide_index=True)
+
         st.markdown("### Preview input shock makro")
         st.dataframe(simulasi_makro_df, use_container_width=True, hide_index=True)
+
         if pdb_history:
             st.markdown("### Preview historis komponen PDB")
             st.dataframe(pdb_history["level"], use_container_width=True, hide_index=True)
+
             st.markdown("### Preview pertumbuhan komponen PDB")
             st.dataframe(pdb_history["growth"], use_container_width=True, hide_index=True)
